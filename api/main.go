@@ -17,13 +17,22 @@ type Transaction struct {
 	Description string  `json:"description"`
 	Amount      float64 `json:"amount"`
 	Date        string  `json:"date"`
+	Type        string  `json:"type"`
+}
+
+type Summary struct {
+	TotalIncome  float64 `json:"totalIncome"`
+	TotalExpense float64 `json:"totalExpense"`
+	Balance      float64 `json:"balance"`
 }
 
 var transactions = []Transaction{
-	{ID: 1, Description: "Kopi Pagi", Amount: 25000, Date: "2025-09-18"},
-	{ID: 2, Description: "Nasi Padang", Amount: 30000, Date: "2025-09-17"},
+	{ID: 1, Description: "Gaji Bulanan", Amount: 5000000, Date: "2025-09-01", Type: "income"},
+	{ID: 2, Description: "Belanja Bulanan", Amount: 750000, Date: "2025-09-05", Type: "expense"},
+	{ID: 3, Description: "Nasi Padang", Amount: 30000, Date: "2025-09-17", Type: "expense"},
+	{ID: 4, Description: "Kopi Pagi", Amount: 25000, Date: "2025-09-18", Type: "expense"},
 }
-var nextID = 3
+var nextID = 5
 
 // Handler utama yang merutekan request
 func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +62,60 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 // Handler GET, POST, DELETE (Tidak ada perubahan sama sekali di dalamnya)
 // main.go -> Ganti FUNGSI INI SAJA
+
+func SummaryHandler(w http.ResponseWriter, r *http.Request) {
+	// Middleware CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	queryParams := r.URL.Query()
+	yearFilter := queryParams.Get("year")
+	monthFilter := queryParams.Get("month")
+
+	var totalIncome, totalExpense float64
+
+	for _, t := range transactions {
+		transactionDate, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			continue
+		}
+		yearMatch, monthMatch := true, true
+		if yearFilter != "" {
+			year, _ := strconv.Atoi(yearFilter)
+			if transactionDate.Year() != year {
+				yearMatch = false
+			}
+		}
+		if monthFilter != "" && monthFilter != "all" {
+			month, _ := strconv.Atoi(monthFilter)
+			if int(transactionDate.Month()) != month {
+				monthMatch = false
+			}
+		}
+
+		if yearMatch && monthMatch {
+			if t.Type == "income" {
+				totalIncome += t.Amount
+			} else if t.Type == "expense" {
+				totalExpense += t.Amount
+			}
+		}
+	}
+
+	summary := Summary{
+		TotalIncome:  totalIncome,
+		TotalExpense: totalExpense,
+		Balance:      totalIncome - totalExpense,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
+}
 
 func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Mengambil data transaksi (dengan potensi filter)...")
@@ -113,14 +176,15 @@ func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Validasi sederhana untuk 'Type'
+	if newTransaction.Type != "income" && newTransaction.Type != "expense" {
+		http.Error(w, "Tipe transaksi tidak valid. Harus 'income' atau 'expense'", http.StatusBadRequest)
+		return
+	}
 	newTransaction.ID = nextID
 	nextID++
-	// Tambahkan transaksi baru ke awal slice agar muncul paling atas
 	transactions = append([]Transaction{newTransaction}, transactions...)
-	
 	log.Printf("Transaksi baru diterima: %+v\n", newTransaction)
-	log.Printf("Total transaksi sekarang: %d\n", len(transactions))
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(newTransaction)

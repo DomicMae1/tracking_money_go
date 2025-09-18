@@ -1,9 +1,20 @@
+// api/index.go
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
-// Vercel akan memanggil fungsi Handler ini
+// Handler utama yang akan dipanggil oleh Vercel
 func Handler(w http.ResponseWriter, r *http.Request) {
-	// Teruskan request ke handler utama kita yang ada di main.go
-	TransactionsHandler(w, r)
+	// Routing sederhana berdasarkan path URL
+	if strings.HasPrefix(r.URL.Path, "/api/summary") {
+		SummaryHandler(w, r)
+	} else if strings.HasPrefix(r.URL.Path, "/api/transactions") {
+		TransactionsHandler(w, r)
+	} else {
+		// Jika path tidak dikenali, kirim 404 Not Found
+		http.NotFound(w, r)
+	}
 }
