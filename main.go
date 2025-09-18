@@ -1,0 +1,185 @@
+// main.go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Struct dan Database In-Memory (Tidak ada perubahan)
+type Transaction struct {
+	ID          int     `json:"id"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Date        string  `json:"date"`
+}
+
+var transactions = []Transaction{
+	{ID: 1, Description: "Kopi Pagi", Amount: 25000, Date: "2025-09-18"},
+	{ID: 2, Description: "Nasi Padang", Amount: 30000, Date: "2025-09-17"},
+	{ID: 3, Description: "Bayar Parkir", Amount: 5000, Date: "2025-08-10"},
+	{ID: 4, Description: "Belanja Bulanan", Amount: 500000, Date: "2024-09-01"},
+}
+var nextID = 5
+
+// ================== PERUBAHAN UTAMA DIMULAI DI SINI ==================
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// 2. Handler utama yang bersih dari kode CORS
+func transactionsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		getTransactionsHandler(w, r)
+	case "POST":
+		createTransactionHandler(w, r)
+	case "DELETE":
+		deleteTransactionHandler(w, r)
+	default:
+		http.Error(w, "Metode tidak diizinkan", http.StatusMethodNotAllowed)
+	}
+}
+
+// Handler GET, POST, DELETE (Tidak ada perubahan sama sekali di dalamnya)
+// main.go -> Ganti FUNGSI INI SAJA
+
+func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Mengambil data transaksi (dengan potensi filter)...")
+
+	queryParams := r.URL.Query()
+	yearFilter := queryParams.Get("year")
+	monthFilter := queryParams.Get("month")
+
+	// Mulai dengan semua transaksi, lalu kita akan filter jika perlu
+	filteredTransactions := transactions
+
+	// Terapkan filter tahun jika ada
+	if yearFilter != "" {
+		var tempTransactions []Transaction
+		year, _ := strconv.Atoi(yearFilter)
+		for _, t := range filteredTransactions {
+			transactionDate, err := time.Parse("2006-01-02", t.Date)
+			if err != nil {
+				continue
+			}
+			if transactionDate.Year() == year {
+				tempTransactions = append(tempTransactions, t)
+			}
+		}
+		filteredTransactions = tempTransactions
+	}
+	
+	// Terapkan filter bulan pada hasil yang sudah difilter tahun (jika ada)
+	if monthFilter != "" && monthFilter != "all" {
+		var tempTransactions []Transaction
+		month, _ := strconv.Atoi(monthFilter)
+		for _, t := range filteredTransactions {
+			transactionDate, err := time.Parse("2006-01-02", t.Date)
+			if err != nil {
+				continue
+			}
+			if int(transactionDate.Month()) == month {
+				tempTransactions = append(tempTransactions, t)
+			}
+		}
+		filteredTransactions = tempTransactions
+	}
+
+	if filteredTransactions == nil {
+		filteredTransactions = make([]Transaction, 0) // Buat slice kosong, bukan nil
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(filteredTransactions)
+}
+
+
+// Handler createTransactionHandler (tidak ada perubahan)
+func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	var newTransaction Transaction
+	err := json.NewDecoder(r.Body).Decode(&newTransaction)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	newTransaction.ID = nextID
+	nextID++
+	// Tambahkan transaksi baru ke awal slice agar muncul paling atas
+	transactions = append([]Transaction{newTransaction}, transactions...)
+	
+	log.Printf("Transaksi baru diterima: %+v\n", newTransaction)
+	log.Printf("Total transaksi sekarang: %d\n", len(transactions))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(newTransaction)
+}
+
+func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Dapatkan ID dari URL, contoh: /api/transactions/1 -> "1"
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	idStr := parts[len(parts)-1] // Ambil bagian terakhir dari URL
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "ID tidak valid", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Cari index dari transaksi yang akan dihapus
+	indexToDelete := -1
+	for i, t := range transactions {
+		if t.ID == id {
+			indexToDelete = i
+			break
+		}
+	}
+
+	// 3. Jika ditemukan, hapus dari slice. Jika tidak, kirim error 404
+	if indexToDelete != -1 {
+		// Cara standar untuk menghapus elemen dari slice di Go
+		transactions = append(transactions[:indexToDelete], transactions[indexToDelete+1:]...)
+		log.Printf("Transaksi dengan ID %d telah dihapus.", id)
+		w.WriteHeader(http.StatusNoContent) // Status 204 No Content, artinya sukses tapi tidak ada body respons
+	} else {
+		http.Error(w, fmt.Sprintf("Transaksi dengan ID %d tidak ditemukan", id), http.StatusNotFound)
+	}
+}
+
+
+// 3. Fungsi main sekarang menggunakan Middleware
+func main() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Backend Go Berjalan!")
+	})
+	mux.HandleFunc("/api/transactions/", transactionsHandler)
+	
+	log.Println("Server berjalan di port 8080...")
+	handler := enableCORS(mux)
+	if err := http.ListenAndServe(":8080", handler); err != nil {
+		log.Fatal(err)
+	}
+}
+
+
+// (Catatan: Saya tidak menempel ulang kode di dalam get/create/delete handler
+// karena isinya sama sekali tidak berubah)
