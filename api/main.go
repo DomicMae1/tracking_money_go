@@ -45,6 +45,17 @@ func enableCORS(next http.Handler) http.Handler {
 
 // 2. Handler utama yang bersih dari kode CORS
 func transactionsHandler(w http.ResponseWriter, r *http.Request) {
+	// Middleware CORS sekarang ditempatkan di sini
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Routing berdasarkan metode HTTP
 	switch r.Method {
 	case "GET":
 		getTransactionsHandler(w, r)
@@ -179,7 +190,3 @@ func main() {
 		log.Fatal(err)
 	}
 }
-
-
-// (Catatan: Saya tidak menempel ulang kode di dalam get/create/delete handler
-// karena isinya sama sekali tidak berubah)
