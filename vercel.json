@@ -8,7 +8,7 @@
   ],
   "routes": [
     {
-      "src": "/api/transactions/.*",
+      "src": "/api/(.*)",
       "dest": "/api/index.go"
     }
   ]
