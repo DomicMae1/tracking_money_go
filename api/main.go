@@ -1,5 +1,5 @@
 // main.go
-package main
+package api
 
 import (
 	"encoding/json"
@@ -22,29 +22,11 @@ type Transaction struct {
 var transactions = []Transaction{
 	{ID: 1, Description: "Kopi Pagi", Amount: 25000, Date: "2025-09-18"},
 	{ID: 2, Description: "Nasi Padang", Amount: 30000, Date: "2025-09-17"},
-	{ID: 3, Description: "Bayar Parkir", Amount: 5000, Date: "2025-08-10"},
-	{ID: 4, Description: "Belanja Bulanan", Amount: 500000, Date: "2024-09-01"},
 }
-var nextID = 5
+var nextID = 3
 
-// ================== PERUBAHAN UTAMA DIMULAI DI SINI ==================
-
-func enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// 2. Handler utama yang bersih dari kode CORS
-func transactionsHandler(w http.ResponseWriter, r *http.Request) {
+// Handler utama yang merutekan request
+func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	// Middleware CORS sekarang ditempatkan di sini
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
@@ -67,6 +49,7 @@ func transactionsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metode tidak diizinkan", http.StatusMethodNotAllowed)
 	}
 }
+
 
 // Handler GET, POST, DELETE (Tidak ada perubahan sama sekali di dalamnya)
 // main.go -> Ganti FUNGSI INI SAJA
@@ -172,21 +155,5 @@ func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent) // Status 204 No Content, artinya sukses tapi tidak ada body respons
 	} else {
 		http.Error(w, fmt.Sprintf("Transaksi dengan ID %d tidak ditemukan", id), http.StatusNotFound)
-	}
-}
-
-
-// 3. Fungsi main sekarang menggunakan Middleware
-func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Backend Go Berjalan!")
-	})
-	mux.HandleFunc("/api/transactions/", transactionsHandler)
-	
-	log.Println("Server berjalan di port 8080...")
-	handler := enableCORS(mux)
-	if err := http.ListenAndServe(":8080", handler); err != nil {
-		log.Fatal(err)
 	}
 }
