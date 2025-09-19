@@ -127,8 +127,6 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(summary)
 }
 
-// api/main.go
-
 func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if !ensureDBConnection(w) { return }
 	collection := client.Database("financial_manager").Collection("transactions")
@@ -139,22 +137,21 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
 		return
 	}
-	year, _ := strconv.Atoi(yearFilter)
 
+	// === PIPELINE AGREGRASI YANG DIPERBAIKI (KEMBALI KE STRATEGI STRING) ===
 	pipeline := mongo.Pipeline{
-		bson.D{{Key: "$addFields", Value: bson.D{
-			{Key: "convertedDate", Value: bson.D{{Key: "$toDate", Value: "$date"}}},
-		}}},
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "$expr", Value: bson.D{
-				{Key: "$eq", Value: bson.A{bson.D{{Key: "$year", Value: "$convertedDate"}}, year}},
-			}},
-		}}},
+		// Tahap 1: Filter dokumen yang cocok dengan tahun yang diberikan menggunakan regex.
+		// Ini efisien jika field 'date' diindeks.
+		bson.D{{Key: "$match", Value: bson.D{{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}}}}},
+
+		// Tahap 2: Kelompokkan berdasarkan bulan (diambil dari string) dan tipe.
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				{Key: "month", Value: bson.D{{Key: "$month", Value: "$convertedDate"}}},
+				// Ambil 2 karakter setelah karakter ke-5 (indeks 5, panjang 2) -> "MM"
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
 				{Key: "type", Value: "$type"},
 			}},
+			// Jumlahkan totalnya
 			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
 		}}},
 	}
@@ -166,53 +163,53 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	var results []bson.M
 	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 
-	// Proses hasil agregasi dengan aman
-	monthlyData := make(map[int]map[string]float64) // Kunci sekarang int
-	
-	// === PERULANGAN YANG SUDAH DIBUAT AMAN (PANIC-PROOF) ===
+	// Proses hasil agregasi dengan aman (kode ini sudah benar)
+	monthlyData := make(map[string]map[string]float64)
 	for _, result := range results {
-		// 1. Cek _id dengan aman
 		idDoc, ok := result["_id"].(primitive.D)
-		if !ok {
-			log.Println("Peringatan: _id bukan dokumen, melewatkan hasil agregasi.")
-			continue // Lanjut ke hasil berikutnya
-		}
+		if !ok { continue }
 		idMap := idDoc.Map()
 
-		// 2. Cek 'month' dengan aman
 		monthVal, ok := idMap["month"]
 		if !ok { continue }
-		month, ok := monthVal.(int32) // $month mengembalikan int32
+		month, ok := monthVal.(string)
 		if !ok { continue }
 		
-		// 3. Cek 'type' dengan aman
 		typeVal, ok := idMap["type"]
-		if !ok { continue } // Lewati jika tidak ada 'type' (misal: null)
+		if !ok { continue }
 		transType, ok := typeVal.(string)
 		if !ok { continue }
 
-		// 4. Cek 'total' dengan aman (switch yang sudah ada)
 		var total float64
 		if totalVal, ok := result["total"]; ok {
 			switch v := totalVal.(type) {
 			case float64: total = v
 			case int32:   total = float64(v)
 			case int64:   total = float64(v)
+			// === PERBAIKAN DI SINI ===
+			case primitive.Decimal128:
+				// Konversi Decimal128 ke string, lalu parse ke float64
+				var parseErr error
+				total, parseErr = strconv.ParseFloat(v.String(), 64)
+				if parseErr != nil {
+					log.Printf("Gagal mem-parsing Decimal128: %v", parseErr)
+					total = 0
+				}
 			}
 		}
-
-		// Logika sisanya aman
-		if _, ok := monthlyData[int(month)]; !ok {
-			monthlyData[int(month)] = make(map[string]float64)
+		
+		if _, ok := monthlyData[month]; !ok {
+			monthlyData[month] = make(map[string]float64)
 		}
-		monthlyData[int(month)][transType] = total
+		monthlyData[month][transType] = total
 	}
-	// =======================================================
 
+	// Format hasil akhir (kode ini sudah benar)
 	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
 	for i := 1; i <= 12; i++ {
-		data := monthlyData[i] // Ambil data menggunakan kunci integer
+		monthStr := fmt.Sprintf("%02d", i)
+		data := monthlyData[monthStr]
 		finalResult = append(finalResult, MonthlySummary{
 			Month:   monthNames[i-1],
 			Income:  data["income"],
