@@ -8,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -20,12 +18,13 @@ import (
 
 // Struct dan Database In-Memory (Tidak ada perubahan)
 type Transaction struct {
-	ID          int     `json:"id"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Date        string  `json:"date"`
-	Type        string  `json:"type"`
+	ID          primitive.ObjectID `json:"id" bson:"_id,omitempty"`
+	Description string             `json:"description" bson:"description"`
+	Amount      float64            `json:"amount" bson:"amount"`
+	Date        string             `json:"date" bson:"date"`
+	Type        string             `json:"type" bson:"type"`
 }
+
 
 type Summary struct {
 	TotalIncome  float64 `json:"totalIncome"`
@@ -42,61 +41,50 @@ type MonthlySummary struct {
 var client *mongo.Client
 
 func connectDB() (*mongo.Client, error) {
-	// Dapatkan connection string dari Environment Variable
 	uri := os.Getenv("MONGO_URI")
 	if uri == "" {
 		return nil, fmt.Errorf("MONGO_URI environment variable not set")
 	}
-
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
 	opts := options.Client().ApplyURI(uri).SetServerAPIOptions(serverAPI)
-
-	// Hubungkan ke MongoDB
 	c, err := mongo.Connect(context.TODO(), opts)
 	if err != nil {
 		return nil, err
 	}
-	
-	// Ping database untuk memastikan koneksi berhasil
 	if err := c.Ping(context.TODO(), nil); err != nil {
 		return nil, err
 	}
-	
 	log.Println("Berhasil terhubung ke MongoDB!")
 	return c, nil
 }
 
-// Handler utama yang merutekan request
-func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	// Setup CORS
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	
+func ensureDBConnection(w http.ResponseWriter) bool {
 	var err error
-	// Jika belum terhubung, buat koneksi
 	if client == nil {
 		client, err = connectDB()
 		if err != nil {
 			http.Error(w, "Gagal terhubung ke database", http.StatusInternalServerError)
 			log.Printf("Error connecting to DB: %v", err)
-			return
+			return false
 		}
 	}
+	return true
+}
+
+// Handler utama yang merutekan request
+func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+	if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
+
+	if !ensureDBConnection(w) { return }
 
 	switch r.Method {
-	case "GET":
-		getTransactionsHandler(w, r)
-	case "POST":
-		createTransactionHandler(w, r)
-	case "DELETE":
-		deleteTransactionHandler(w, r)
-	default:
-		http.Error(w, "Metode tidak diizinkan", http.StatusMethodNotAllowed)
+	case "GET": getTransactionsHandler(w, r)
+	case "POST": createTransactionHandler(w, r)
+	case "DELETE": deleteTransactionHandler(w, r)
+	default: http.Error(w, "Metode tidak diizinkan", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -105,55 +93,50 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 // main.go -> Ganti FUNGSI INI SAJA
 
 func SummaryHandler(w http.ResponseWriter, r *http.Request) {
-	// Middleware CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
+	
+	if !ensureDBConnection(w) { return }
+	collection := client.Database("financial_manager").Collection("transactions")
 
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
 	monthFilter := queryParams.Get("month")
-
-	var totalIncome, totalExpense float64
-
-	for _, t := range transactions {
-		transactionDate, err := time.Parse("2006-01-02", t.Date)
-		if err != nil {
-			continue
-		}
-		yearMatch, monthMatch := true, true
-		if yearFilter != "" {
-			year, _ := strconv.Atoi(yearFilter)
-			if transactionDate.Year() != year {
-				yearMatch = false
-			}
-		}
+	filter := bson.M{}
+	if yearFilter != "" {
+		dateRegex := "^" + yearFilter
 		if monthFilter != "" && monthFilter != "all" {
-			month, _ := strconv.Atoi(monthFilter)
-			if int(transactionDate.Month()) != month {
-				monthMatch = false
-			}
+			dateRegex += "-" + monthFilter
 		}
+		filter["date"] = bson.M{"$regex": dateRegex}
+	}
+	
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: filter}},
+		bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$type"},
+			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
+		}}},
+	}
+	
+	cursor, err := collection.Aggregate(context.TODO(), pipeline)
+	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 
-		if yearMatch && monthMatch {
-			if t.Type == "income" {
-				totalIncome += t.Amount
-			} else if t.Type == "expense" {
-				totalExpense += t.Amount
-			}
+	var results []bson.M
+	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+
+	summary := Summary{}
+	for _, result := range results {
+		if result["_id"] == "income" {
+			summary.TotalIncome = result["total"].(float64)
+		} else if result["_id"] == "expense" {
+			summary.TotalExpense = result["total"].(float64)
 		}
 	}
-
-	summary := Summary{
-		TotalIncome:  totalIncome,
-		TotalExpense: totalExpense,
-		Balance:      totalIncome - totalExpense,
-	}
-
+	summary.Balance = summary.TotalIncome - summary.TotalExpense
+	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(summary)
 }
@@ -163,11 +146,8 @@ func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
 	monthFilter := queryParams.Get("month")
-
-	// Buat filter MongoDB (bson.M)
 	filter := bson.M{}
 	if yearFilter != "" {
-		// Filter berdasarkan awalan tanggal (contoh: "2025-")
 		dateRegex := "^" + yearFilter
 		if monthFilter != "" && monthFilter != "all" {
 			dateRegex += "-" + monthFilter
@@ -175,25 +155,12 @@ func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		filter["date"] = bson.M{"$regex": dateRegex}
 	}
 	
-	// Cari data di database
 	cursor, err := collection.Find(context.TODO(), filter, options.Find().SetSort(bson.D{{Key: "date", Value: -1}}))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 	defer cursor.Close(context.TODO())
-
 	var results []Transaction
-	if err = cursor.All(context.TODO(), &results); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	
-	// Kirim array kosong jika tidak ada hasil, bukan null
-	if results == nil {
-		results = make([]Transaction, 0)
-	}
-
+	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+	if results == nil { results = make([]Transaction, 0) }
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
 }
@@ -205,17 +172,17 @@ func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	var newTransaction Transaction
 	json.NewDecoder(r.Body).Decode(&newTransaction)
 
-	// MongoDB akan otomatis membuat _id, jadi kita tidak perlu membuatnya
-	result, err := collection.InsertOne(context.TODO(), newTransaction)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if newTransaction.Type != "income" && newTransaction.Type != "expense" {
+		http.Error(w, "Tipe transaksi tidak valid", http.StatusBadRequest)
 		return
 	}
 	
-	// Ambil kembali dokumen yang baru saja dibuat untuk dikirim sebagai respons
+	newTransaction.ID = primitive.NewObjectID() // Buat ID baru
+	result, err := collection.InsertOne(context.TODO(), newTransaction)
+	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+	
 	var createdTransaction Transaction
 	collection.FindOne(context.TODO(), bson.M{"_id": result.InsertedID}).Decode(&createdTransaction)
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(createdTransaction)
@@ -226,37 +193,22 @@ func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	parts := strings.Split(path, "/")
 	idStr := parts[len(parts)-1]
-
-	// Konversi string ID dari URL menjadi ObjectID MongoDB
 	objectID, err := primitive.ObjectIDFromHex(idStr)
-	if err != nil {
-		http.Error(w, "ID tidak valid", http.StatusBadRequest)
-		return
-	}
-
+	if err != nil { http.Error(w, "ID tidak valid", http.StatusBadRequest); return }
 	result, err := collection.DeleteOne(context.TODO(), bson.M{"_id": objectID})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		http.Error(w, "Transaksi tidak ditemukan", http.StatusNotFound)
-		return
-	}
-
+	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+	if result.DeletedCount == 0 { http.Error(w, "Transaksi tidak ditemukan", http.StatusNotFound); return }
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
-	// Middleware CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	if r.Method == "OPTIONS" { w.WriteHeader(http.StatusOK); return }
+	
+	if !ensureDBConnection(w) { return }
+	collection := client.Database("financial_manager").Collection("transactions")
 
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
@@ -264,46 +216,51 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
 		return
 	}
-	year, _ := strconv.Atoi(yearFilter)
 
-	// Inisialisasi data untuk 12 bulan
-	monthlyData := make(map[time.Month]struct {
-		Income  float64
-		Expense float64
-	})
-
-	for _, t := range transactions {
-		transactionDate, err := time.Parse("2006-01-02", t.Date)
-		if err != nil {
-			continue
-		}
-
-		if transactionDate.Year() == year {
-			month := transactionDate.Month()
-			data := monthlyData[month]
-			if t.Type == "income" {
-				data.Income += t.Amount
-			} else if t.Type == "expense" {
-				data.Expense += t.Amount
-			}
-			monthlyData[month] = data
-		}
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.D{{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}}}}},
+		bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
+				{Key: "type", Value: "$type"},
+			}},
+			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
+		}}},
 	}
 
-	// Format hasil ke dalam slice MonthlySummary
-	var result []MonthlySummary
-	months := []time.Month{time.January, time.February, time.March, time.April, time.May, time.June, time.July, time.August, time.September, time.October, time.November, time.December}
+	cursor, err := collection.Aggregate(context.TODO(), pipeline)
+	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+
+	var results []bson.M
+	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+
+	// Proses hasil agregasi
+	monthlyData := make(map[string]map[string]float64)
+	for _, result := range results {
+		id := result["_id"].(primitive.D)
+		month := id.Map()["month"].(string)
+		transType := id.Map()["type"].(string)
+		total := result["total"].(float64)
+		
+		if _, ok := monthlyData[month]; !ok {
+			monthlyData[month] = make(map[string]float64)
+		}
+		monthlyData[month][transType] = total
+	}
+
+	// Format hasil akhir
+	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
-	
-	for i, month := range months {
-		data := monthlyData[month]
-		result = append(result, MonthlySummary{
-			Month:   monthNames[i],
-			Income:  data.Income,
-			Expense: data.Expense,
+	for i := 1; i <= 12; i++ {
+		monthStr := fmt.Sprintf("%02d", i)
+		data := monthlyData[monthStr]
+		finalResult = append(finalResult, MonthlySummary{
+			Month:   monthNames[i-1],
+			Income:  data["income"],
+			Expense: data["expense"],
 		})
 	}
 	
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(finalResult)
 }
