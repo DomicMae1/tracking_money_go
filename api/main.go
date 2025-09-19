@@ -137,37 +137,21 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
 		return
 	}
-	year, _ := strconv.Atoi(yearFilter)
 
-	// === PIPELINE AGREGRASI YANG DIPERBAIKI MENGGUNAKAN OPERATOR TANGGAL ASLI ===
+	// === PIPELINE AGREGRASI YANG DIPERBAIKI (KEMBALI KE STRATEGI STRING) ===
 	pipeline := mongo.Pipeline{
-		// Tahap 1: Buat field baru 'convertedDate' dengan mengubah string 'date' menjadi tipe Date.
-		// Kita beritahu MongoDB formatnya adalah YYYY-MM-DD.
-		bson.D{{Key: "$addFields", Value: bson.D{
-			{Key: "convertedDate", Value: bson.D{
-				{Key: "$dateFromString", Value: bson.D{
-					{Key: "dateString", Value: "$date"},
-					{Key: "format", Value: "%Y-%m-%d"},
-				}},
-			}},
-		}}},
+		// Tahap 1: Filter dokumen yang cocok dengan tahun yang diberikan menggunakan regex.
+		// Ini efisien jika field 'date' diindeks.
+		bson.D{{Key: "$match", Value: bson.D{{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}}}}},
 
-		// Tahap 2: Filter dokumen berdasarkan tahun dari 'convertedDate' yang baru.
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "$expr", Value: bson.D{
-				{Key: "$eq", Value: bson.A{
-					bson.D{{Key: "$year", Value: "$convertedDate"}},
-					year,
-				}},
-			}},
-		}}},
-
-		// Tahap 3: Kelompokkan berdasarkan bulan (diambil dari 'convertedDate') dan tipe.
+		// Tahap 2: Kelompokkan berdasarkan bulan (diambil dari string) dan tipe.
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				{Key: "month", Value: bson.D{{Key: "$month", Value: "$convertedDate"}}},
+				// Ambil 2 karakter setelah karakter ke-5 (indeks 5, panjang 2) -> "MM"
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
 				{Key: "type", Value: "$type"},
 			}},
+			// Jumlahkan totalnya
 			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
 		}}},
 	}
@@ -179,17 +163,16 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	var results []bson.M
 	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 
-	// Proses hasil agregasi (diubah untuk menangani bulan sebagai angka dari MongoDB)
-	monthlyData := make(map[int]map[string]float64) // Kunci sekarang int
+	// Proses hasil agregasi dengan aman (kode ini sudah benar)
+	monthlyData := make(map[string]map[string]float64)
 	for _, result := range results {
 		idDoc, ok := result["_id"].(primitive.D)
 		if !ok { continue }
 		idMap := idDoc.Map()
 
-		// $month mengembalikan angka (misal: 9 untuk September)
 		monthVal, ok := idMap["month"]
 		if !ok { continue }
-		month, ok := monthVal.(int32) // Tipe datanya int32
+		month, ok := monthVal.(string)
 		if !ok { continue }
 		
 		typeVal, ok := idMap["type"]
@@ -208,17 +191,18 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		
-		if _, ok := monthlyData[int(month)]; !ok {
-			monthlyData[int(month)] = make(map[string]float64)
+		if _, ok := monthlyData[month]; !ok {
+			monthlyData[month] = make(map[string]float64)
 		}
-		monthlyData[int(month)][transType] = total
+		monthlyData[month][transType] = total
 	}
 
-	// Format hasil akhir (disesuaikan untuk kunci bulan berupa angka)
+	// Format hasil akhir (kode ini sudah benar)
 	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
 	for i := 1; i <= 12; i++ {
-		data := monthlyData[i] // Ambil data menggunakan kunci integer
+		monthStr := fmt.Sprintf("%02d", i) // "01", "02", ..., "09", "10", ...
+		data := monthlyData[monthStr]
 		finalResult = append(finalResult, MonthlySummary{
 			Month:   monthNames[i-1],
 			Income:  data["income"],
