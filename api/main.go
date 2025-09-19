@@ -128,7 +128,6 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 
 func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if !ensureDBConnection(w) { return }
-	// === PERBAIKAN: Deklarasikan 'collection' ===
 	collection := client.Database("financial_manager").Collection("transactions")
 
 	queryParams := r.URL.Query()
@@ -161,7 +160,22 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		id := result["_id"].(primitive.D)
 		month := id.Map()["month"].(string)
 		transType := id.Map()["type"].(string)
-		total := result["total"].(float64)
+
+		// === PERBAIKAN UTAMA DI SINI ===
+		// Gunakan switch untuk menangani berbagai tipe angka dengan aman
+		var total float64
+		switch v := result["total"].(type) {
+		case float64:
+			total = v
+		case int32:
+			total = float64(v)
+		case int64:
+			total = float64(v)
+		default:
+			// Jika tipe tidak dikenali, anggap saja 0
+			total = 0
+		}
+		// ===============================
 		
 		if _, ok := monthlyData[month]; !ok {
 			monthlyData[month] = make(map[string]float64)
