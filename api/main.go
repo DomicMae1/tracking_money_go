@@ -156,32 +156,46 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 
 	monthlyData := make(map[string]map[string]float64)
+	
+	// === PERULANGAN YANG SUDAH DIBUAT AMAN (PANIC-PROOF) ===
 	for _, result := range results {
-		id := result["_id"].(primitive.D)
-		month := id.Map()["month"].(string)
-		transType := id.Map()["type"].(string)
-
-		// === PERBAIKAN UTAMA DI SINI ===
-		// Gunakan switch untuk menangani berbagai tipe angka dengan aman
-		var total float64
-		switch v := result["total"].(type) {
-		case float64:
-			total = v
-		case int32:
-			total = float64(v)
-		case int64:
-			total = float64(v)
-		default:
-			// Jika tipe tidak dikenali, anggap saja 0
-			total = 0
+		// 1. Cek _id dengan aman
+		idDoc, ok := result["_id"].(primitive.D)
+		if !ok {
+			log.Println("Peringatan: _id bukan dokumen, melewatkan hasil agregasi.")
+			continue // Lanjut ke hasil berikutnya
 		}
-		// ===============================
+		idMap := idDoc.Map()
+
+		// 2. Cek 'month' dengan aman
+		monthVal, ok := idMap["month"]
+		if !ok { continue }
+		month, ok := monthVal.(string)
+		if !ok { continue }
 		
+		// 3. Cek 'type' dengan aman
+		typeVal, ok := idMap["type"]
+		if !ok { continue }
+		transType, ok := typeVal.(string)
+		if !ok { continue }
+
+		// 4. Cek 'total' dengan aman (switch yang sudah ada)
+		var total float64
+		if totalVal, ok := result["total"]; ok {
+			switch v := totalVal.(type) {
+			case float64: total = v
+			case int32:   total = float64(v)
+			case int64:   total = float64(v)
+			}
+		}
+
+		// Logika sisanya aman
 		if _, ok := monthlyData[month]; !ok {
 			monthlyData[month] = make(map[string]float64)
 		}
 		monthlyData[month][transType] = total
 	}
+	// =======================================================
 
 	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
