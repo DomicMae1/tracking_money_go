@@ -186,15 +186,8 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 			case float64: total = v
 			case int32:   total = float64(v)
 			case int64:   total = float64(v)
-			// === PERBAIKAN DI SINI ===
 			case primitive.Decimal128:
-				// Konversi Decimal128 ke string, lalu parse ke float64
-				var parseErr error
-				total, parseErr = strconv.ParseFloat(v.String(), 64)
-				if parseErr != nil {
-					log.Printf("Gagal mem-parsing Decimal128: %v", parseErr)
-					total = 0
-				}
+				total, _ = strconv.ParseFloat(v.String(), 64)
 			}
 		}
 		
