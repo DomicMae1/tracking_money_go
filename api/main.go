@@ -140,14 +140,11 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// PIPELINE AGGREGASI
 	pipeline := mongo.Pipeline{
-		// Tahap 1: filter berdasarkan tahun (string regex)
 		bson.D{{Key: "$match", Value: bson.D{
 			{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
 		}}},
-		// Tahap 2: group berdasarkan bulan (MM dari string) dan type
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				// Ambil substring bulan dari "YYYY-MM-DD"
 				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
 				{Key: "type", Value: "$type"},
 			}},
