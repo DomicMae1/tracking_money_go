@@ -40,47 +40,6 @@ var transactions = []Transaction{
 }
 var nextID = 5
 
-// ================== FUNGSI HELPER BARU UNTUK FILTER ==================
-// Fungsi ini menjadi satu-satunya sumber kebenaran untuk logika filter.
-func filterTransactions(r *http.Request, allTransactions []Transaction) []Transaction {
-	queryParams := r.URL.Query()
-	yearFilter := queryParams.Get("year")
-	monthFilter := queryParams.Get("month")
-
-	// Jika tidak ada filter tahun, kita asumsikan tidak ada filter sama sekali
-	if yearFilter == "" {
-		return allTransactions
-	}
-	
-	var filtered []Transaction
-	year, _ := strconv.Atoi(yearFilter)
-
-	for _, t := range allTransactions {
-		transactionDate, err := time.Parse("2006-01-02", t.Date)
-		if err != nil {
-			continue
-		}
-
-		// Cek filter tahun
-		if transactionDate.Year() != year {
-			continue // Jika tahun tidak cocok, langsung lewati transaksi ini
-		}
-
-		// Jika tahun cocok, cek filter bulan
-		if monthFilter != "" && monthFilter != "all" {
-			month, _ := strconv.Atoi(monthFilter)
-			if int(transactionDate.Month()) != month {
-				continue // Jika bulan tidak cocok, lewati
-			}
-		}
-
-		// Jika semua filter lolos, tambahkan ke hasil
-		filtered = append(filtered, t)
-	}
-
-	return filtered
-}
-
 // Handler utama yang merutekan request
 func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	// Middleware CORS sekarang ditempatkan di sini
@@ -119,14 +78,38 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	filtered := filterTransactions(r, transactions)
+
+	queryParams := r.URL.Query()
+	yearFilter := queryParams.Get("year")
+	monthFilter := queryParams.Get("month")
+
 	var totalIncome, totalExpense float64
 
-	for _, t := range filtered {
-		if t.Type == "income" {
-			totalIncome += t.Amount
-		} else if t.Type == "expense" {
-			totalExpense += t.Amount
+	for _, t := range transactions {
+		transactionDate, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			continue
+		}
+		yearMatch, monthMatch := true, true
+		if yearFilter != "" {
+			year, _ := strconv.Atoi(yearFilter)
+			if transactionDate.Year() != year {
+				yearMatch = false
+			}
+		}
+		if monthFilter != "" && monthFilter != "all" {
+			month, _ := strconv.Atoi(monthFilter)
+			if int(transactionDate.Month()) != month {
+				monthMatch = false
+			}
+		}
+
+		if yearMatch && monthMatch {
+			if t.Type == "income" {
+				totalIncome += t.Amount
+			} else if t.Type == "expense" {
+				totalExpense += t.Amount
+			}
 		}
 	}
 
@@ -141,13 +124,53 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Mengambil data transaksi...")
-	filtered := filterTransactions(r, transactions)
-	if filtered == nil {
-		filtered = make([]Transaction, 0)
+	log.Println("Mengambil data transaksi (dengan potensi filter)...")
+
+	queryParams := r.URL.Query()
+	yearFilter := queryParams.Get("year")
+	monthFilter := queryParams.Get("month")
+
+	// Mulai dengan semua transaksi, lalu kita akan filter jika perlu
+	filteredTransactions := transactions
+
+	// Terapkan filter tahun jika ada
+	if yearFilter != "" {
+		var tempTransactions []Transaction
+		year, _ := strconv.Atoi(yearFilter)
+		for _, t := range filteredTransactions {
+			transactionDate, err := time.Parse("2006-01-02", t.Date)
+			if err != nil {
+				continue
+			}
+			if transactionDate.Year() == year {
+				tempTransactions = append(tempTransactions, t)
+			}
+		}
+		filteredTransactions = tempTransactions
 	}
+	
+	// Terapkan filter bulan pada hasil yang sudah difilter tahun (jika ada)
+	if monthFilter != "" && monthFilter != "all" {
+		var tempTransactions []Transaction
+		month, _ := strconv.Atoi(monthFilter)
+		for _, t := range filteredTransactions {
+			transactionDate, err := time.Parse("2006-01-02", t.Date)
+			if err != nil {
+				continue
+			}
+			if int(transactionDate.Month()) == month {
+				tempTransactions = append(tempTransactions, t)
+			}
+		}
+		filteredTransactions = tempTransactions
+	}
+
+	if filteredTransactions == nil {
+		filteredTransactions = make([]Transaction, 0) // Buat slice kosong, bukan nil
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(filtered)
+	json.NewEncoder(w).Encode(filteredTransactions)
 }
 
 
@@ -221,25 +244,32 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
 		return
 	}
+	year, _ := strconv.Atoi(yearFilter)
 
 	// Inisialisasi data untuk 12 bulan
-	filtered := filterTransactions(r, transactions)
+	monthlyData := make(map[time.Month]struct {
+		Income  float64
+		Expense float64
+	})
 
-	monthlyData := make(map[time.Month]struct{ Income, Expense float64 })
-	for _, t := range filtered {
-		if t.Date[0:4] == yearFilter { // Pastikan hanya tahun yang relevan
-			date, _ := time.Parse("2006-01-02", t.Date)
-			month := date.Month()
+	for _, t := range transactions {
+		transactionDate, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			continue
+		}
+
+		if transactionDate.Year() == year {
+			month := transactionDate.Month()
 			data := monthlyData[month]
 			if t.Type == "income" {
 				data.Income += t.Amount
-			} else {
+			} else if t.Type == "expense" {
 				data.Expense += t.Amount
 			}
 			monthlyData[month] = data
 		}
 	}
-	
+
 	// Format hasil ke dalam slice MonthlySummary
 	var result []MonthlySummary
 	months := []time.Month{time.January, time.February, time.March, time.April, time.May, time.June, time.July, time.August, time.September, time.October, time.November, time.December}
