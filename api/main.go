@@ -26,6 +26,12 @@ type Summary struct {
 	Balance      float64 `json:"balance"`
 }
 
+type MonthlySummary struct {
+	Month   string  `json:"month"`
+	Income  float64 `json:"income"`
+	Expense float64 `json:"expense"`
+}
+
 var transactions = []Transaction{
 	{ID: 1, Description: "Gaji Bulanan", Amount: 5000000, Date: "2025-09-01", Type: "income"},
 	{ID: 2, Description: "Belanja Bulanan", Amount: 750000, Date: "2025-09-05", Type: "expense"},
@@ -220,4 +226,64 @@ func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, fmt.Sprintf("Transaksi dengan ID %d tidak ditemukan", id), http.StatusNotFound)
 	}
+}
+
+func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
+	// Middleware CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	queryParams := r.URL.Query()
+	yearFilter := queryParams.Get("year")
+	if yearFilter == "" {
+		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
+		return
+	}
+	year, _ := strconv.Atoi(yearFilter)
+
+	// Inisialisasi data untuk 12 bulan
+	monthlyData := make(map[time.Month]struct {
+		Income  float64
+		Expense float64
+	})
+
+	for _, t := range transactions {
+		transactionDate, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			continue
+		}
+
+		if transactionDate.Year() == year {
+			month := transactionDate.Month()
+			data := monthlyData[month]
+			if t.Type == "income" {
+				data.Income += t.Amount
+			} else if t.Type == "expense" {
+				data.Expense += t.Amount
+			}
+			monthlyData[month] = data
+		}
+	}
+
+	// Format hasil ke dalam slice MonthlySummary
+	var result []MonthlySummary
+	months := []time.Month{time.January, time.February, time.March, time.April, time.May, time.June, time.July, time.August, time.September, time.October, time.November, time.December}
+	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
+	
+	for i, month := range months {
+		data := monthlyData[month]
+		result = append(result, MonthlySummary{
+			Month:   monthNames[i],
+			Income:  data.Income,
+			Expense: data.Expense,
+		})
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
