@@ -2,13 +2,20 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Struct dan Database In-Memory (Tidak ada perubahan)
@@ -32,27 +39,55 @@ type MonthlySummary struct {
 	Expense float64 `json:"expense"`
 }
 
-var transactions = []Transaction{
-	{ID: 1, Description: "Gaji Bulanan", Amount: 5000000, Date: "2025-09-01", Type: "income"},
-	{ID: 2, Description: "Belanja Bulanan", Amount: 750000, Date: "2025-09-05", Type: "expense"},
-	{ID: 3, Description: "Nasi Padang", Amount: 30000, Date: "2025-09-17", Type: "expense"},
-	{ID: 4, Description: "Kopi Pagi", Amount: 25000, Date: "2025-09-18", Type: "expense"},
+var client *mongo.Client
+
+func connectDB() (*mongo.Client, error) {
+	// Dapatkan connection string dari Environment Variable
+	uri := os.Getenv("MONGO_URI")
+	if uri == "" {
+		return nil, fmt.Errorf("MONGO_URI environment variable not set")
+	}
+
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	opts := options.Client().ApplyURI(uri).SetServerAPIOptions(serverAPI)
+
+	// Hubungkan ke MongoDB
+	c, err := mongo.Connect(context.TODO(), opts)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Ping database untuk memastikan koneksi berhasil
+	if err := c.Ping(context.TODO(), nil); err != nil {
+		return nil, err
+	}
+	
+	log.Println("Berhasil terhubung ke MongoDB!")
+	return c, nil
 }
-var nextID = 5
 
 // Handler utama yang merutekan request
 func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	// Middleware CORS sekarang ditempatkan di sini
+	// Setup CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
-
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	
+	var err error
+	// Jika belum terhubung, buat koneksi
+	if client == nil {
+		client, err = connectDB()
+		if err != nil {
+			http.Error(w, "Gagal terhubung ke database", http.StatusInternalServerError)
+			log.Printf("Error connecting to DB: %v", err)
+			return
+		}
+	}
 
-	// Routing berdasarkan metode HTTP
 	switch r.Method {
 	case "GET":
 		getTransactionsHandler(w, r)
@@ -124,108 +159,93 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Mengambil data transaksi (dengan potensi filter)...")
-
+	collection := client.Database("financial_manager").Collection("transactions")
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
 	monthFilter := queryParams.Get("month")
 
-	// Mulai dengan semua transaksi, lalu kita akan filter jika perlu
-	filteredTransactions := transactions
-
-	// Terapkan filter tahun jika ada
+	// Buat filter MongoDB (bson.M)
+	filter := bson.M{}
 	if yearFilter != "" {
-		var tempTransactions []Transaction
-		year, _ := strconv.Atoi(yearFilter)
-		for _, t := range filteredTransactions {
-			transactionDate, err := time.Parse("2006-01-02", t.Date)
-			if err != nil {
-				continue
-			}
-			if transactionDate.Year() == year {
-				tempTransactions = append(tempTransactions, t)
-			}
+		// Filter berdasarkan awalan tanggal (contoh: "2025-")
+		dateRegex := "^" + yearFilter
+		if monthFilter != "" && monthFilter != "all" {
+			dateRegex += "-" + monthFilter
 		}
-		filteredTransactions = tempTransactions
+		filter["date"] = bson.M{"$regex": dateRegex}
 	}
 	
-	// Terapkan filter bulan pada hasil yang sudah difilter tahun (jika ada)
-	if monthFilter != "" && monthFilter != "all" {
-		var tempTransactions []Transaction
-		month, _ := strconv.Atoi(monthFilter)
-		for _, t := range filteredTransactions {
-			transactionDate, err := time.Parse("2006-01-02", t.Date)
-			if err != nil {
-				continue
-			}
-			if int(transactionDate.Month()) == month {
-				tempTransactions = append(tempTransactions, t)
-			}
-		}
-		filteredTransactions = tempTransactions
+	// Cari data di database
+	cursor, err := collection.Find(context.TODO(), filter, options.Find().SetSort(bson.D{{Key: "date", Value: -1}}))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	defer cursor.Close(context.TODO())
 
-	if filteredTransactions == nil {
-		filteredTransactions = make([]Transaction, 0) // Buat slice kosong, bukan nil
+	var results []Transaction
+	if err = cursor.All(context.TODO(), &results); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	
+	// Kirim array kosong jika tidak ada hasil, bukan null
+	if results == nil {
+		results = make([]Transaction, 0)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(filteredTransactions)
+	json.NewEncoder(w).Encode(results)
 }
 
 
 // Handler createTransactionHandler (tidak ada perubahan)
 func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	collection := client.Database("financial_manager").Collection("transactions")
 	var newTransaction Transaction
-	err := json.NewDecoder(r.Body).Decode(&newTransaction)
+	json.NewDecoder(r.Body).Decode(&newTransaction)
+
+	// MongoDB akan otomatis membuat _id, jadi kita tidak perlu membuatnya
+	result, err := collection.InsertOne(context.TODO(), newTransaction)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Validasi sederhana untuk 'Type'
-	if newTransaction.Type != "income" && newTransaction.Type != "expense" {
-		http.Error(w, "Tipe transaksi tidak valid. Harus 'income' atau 'expense'", http.StatusBadRequest)
-		return
-	}
-	newTransaction.ID = nextID
-	nextID++
-	transactions = append([]Transaction{newTransaction}, transactions...)
-	log.Printf("Transaksi baru diterima: %+v\n", newTransaction)
+	
+	// Ambil kembali dokumen yang baru saja dibuat untuk dikirim sebagai respons
+	var createdTransaction Transaction
+	collection.FindOne(context.TODO(), bson.M{"_id": result.InsertedID}).Decode(&createdTransaction)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newTransaction)
+	json.NewEncoder(w).Encode(createdTransaction)
 }
 
 func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	// 1. Dapatkan ID dari URL, contoh: /api/transactions/1 -> "1"
+	collection := client.Database("financial_manager").Collection("transactions")
 	path := r.URL.Path
 	parts := strings.Split(path, "/")
-	idStr := parts[len(parts)-1] // Ambil bagian terakhir dari URL
+	idStr := parts[len(parts)-1]
 
-	id, err := strconv.Atoi(idStr)
+	// Konversi string ID dari URL menjadi ObjectID MongoDB
+	objectID, err := primitive.ObjectIDFromHex(idStr)
 	if err != nil {
 		http.Error(w, "ID tidak valid", http.StatusBadRequest)
 		return
 	}
 
-	// 2. Cari index dari transaksi yang akan dihapus
-	indexToDelete := -1
-	for i, t := range transactions {
-		if t.ID == id {
-			indexToDelete = i
-			break
-		}
+	result, err := collection.DeleteOne(context.TODO(), bson.M{"_id": objectID})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	// 3. Jika ditemukan, hapus dari slice. Jika tidak, kirim error 404
-	if indexToDelete != -1 {
-		// Cara standar untuk menghapus elemen dari slice di Go
-		transactions = append(transactions[:indexToDelete], transactions[indexToDelete+1:]...)
-		log.Printf("Transaksi dengan ID %d telah dihapus.", id)
-		w.WriteHeader(http.StatusNoContent) // Status 204 No Content, artinya sukses tapi tidak ada body respons
-	} else {
-		http.Error(w, fmt.Sprintf("Transaksi dengan ID %d tidak ditemukan", id), http.StatusNotFound)
+	if result.DeletedCount == 0 {
+		http.Error(w, "Transaksi tidak ditemukan", http.StatusNotFound)
+		return
 	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
