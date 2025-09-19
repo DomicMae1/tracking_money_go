@@ -138,20 +138,19 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// === PIPELINE AGREGRASI YANG DIPERBAIKI (KEMBALI KE STRATEGI STRING) ===
+	// PIPELINE AGGREGASI
 	pipeline := mongo.Pipeline{
-		// Tahap 1: Filter dokumen yang cocok dengan tahun yang diberikan menggunakan regex.
-		// Ini efisien jika field 'date' diindeks.
-		bson.D{{Key: "$match", Value: bson.D{{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}}}}},
-
-		// Tahap 2: Kelompokkan berdasarkan bulan (diambil dari string) dan tipe.
+		// Tahap 1: filter berdasarkan tahun (string regex)
+		bson.D{{Key: "$match", Value: bson.D{
+			{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
+		}}},
+		// Tahap 2: group berdasarkan bulan (MM dari string) dan type
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				// Ambil 2 karakter setelah karakter ke-5 (indeks 5, panjang 2) -> "MM"
+				// Ambil substring bulan dari "YYYY-MM-DD"
 				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
 				{Key: "type", Value: "$type"},
 			}},
-			// Jumlahkan totalnya
 			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
 		}}},
 	}
@@ -161,47 +160,47 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	defer cursor.Close(context.TODO())
 
 	var results []bson.M
-	if err = cursor.All(context.TODO(), &results); err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+	if err = cursor.All(context.TODO(), &results); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	// Proses hasil agregasi dengan aman (kode ini sudah benar)
+	// === Proses hasil ===
 	monthlyData := make(map[string]map[string]float64)
 	for _, result := range results {
 		idDoc, ok := result["_id"].(primitive.D)
 		if !ok { continue }
 		idMap := idDoc.Map()
 
-		monthVal, ok := idMap["month"]
-		if !ok { continue }
-		month, ok := monthVal.(string)
-		if !ok { continue }
-		
-		typeVal, ok := idMap["type"]
-		if !ok { continue }
-		transType, ok := typeVal.(string)
-		if !ok { continue }
+		// Ambil bulan ("01", "02", ..., "12")
+		month, _ := idMap["month"].(string)
+		// Ambil tipe ("income" / "expense")
+		transType, _ := idMap["type"].(string)
 
+		// Ambil total
 		var total float64
-		if totalVal, ok := result["total"]; ok {
-			switch v := totalVal.(type) {
-			case float64: total = v
-			case int32:   total = float64(v)
-			case int64:   total = float64(v)
-			case primitive.Decimal128:
-				total, _ = strconv.ParseFloat(v.String(), 64)
-			}
+		switch v := result["total"].(type) {
+		case float64:
+			total = v
+		case int32:
+			total = float64(v)
+		case int64:
+			total = float64(v)
+		case primitive.Decimal128:
+			total, _ = strconv.ParseFloat(v.String(), 64)
 		}
-		
+
 		if _, ok := monthlyData[month]; !ok {
 			monthlyData[month] = make(map[string]float64)
 		}
 		monthlyData[month][transType] = total
 	}
 
-	// Format hasil akhir (kode ini sudah benar)
+	// === Format output ===
 	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
 	for i := 1; i <= 12; i++ {
-		monthStr := fmt.Sprintf("%02d", i) // "01", "02", ..., "09", "10", ...
+		monthStr := fmt.Sprintf("%02d", i) // "01", "02", ...
 		data := monthlyData[monthStr]
 		finalResult = append(finalResult, MonthlySummary{
 			Month:   monthNames[i-1],
@@ -209,7 +208,7 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 			Expense: data["expense"],
 		})
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(finalResult)
 }
