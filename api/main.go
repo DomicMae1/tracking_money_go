@@ -284,22 +284,30 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parameter 'year' dibutuhkan", http.StatusBadRequest)
 		return
 	}
-
 	monthFilter := queryParams.Get("month")
 
-	// PIPELINE AGGREGASI
+	// 🔥 Ambil userId dari context (hasil AuthMiddleware)
+	userIdStr := r.Context().Value(userIDKey).(string) // pakai contextKey yg sudah kita definisikan
+	userId, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	// === Filter dasar: hanya transaksi milik user ini ===
+	match := bson.D{
+		{Key: "userId", Value: userId},
+		{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
+	}
+
+	if monthFilter != "" && monthFilter != "all" {
+		// contoh: "2025-09"
+		prefix := fmt.Sprintf("^%s-%s", yearFilter, monthFilter)
+		match = bson.D{
+			{Key: "userId", Value: userId},
+			{Key: "date", Value: bson.M{"$regex": prefix}},
+		}
+	}
+
+	// === Pipeline dengan filter userId ===
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: func() bson.D {
-			match := bson.D{
-				{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
-			}
-			if monthFilter != "" && monthFilter != "all" {
-				// contoh: "2025-09"
-				prefix := fmt.Sprintf("^%s-%s", yearFilter, monthFilter)
-				match = bson.D{{Key: "date", Value: bson.M{"$regex": prefix}}}
-			}
-			return match
-		}()}},
+		{{Key: "$match", Value: match}},
 		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
 				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
@@ -325,17 +333,14 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	// === Proses hasil ===
 	monthlyData := make(map[string]map[string]float64)
 	for _, result := range results {
-		idDoc, ok := result["_id"].(bson.M) // pakai bson.M lebih aman
+		idDoc, ok := result["_id"].(bson.M)
 		if !ok {
 			continue
 		}
 
-		// Ambil bulan ("01", "02", ..., "12")
 		month, _ := idDoc["month"].(string)
-		// Ambil tipe ("income" / "expense")
 		transType, _ := idDoc["type"].(string)
 
-		// Ambil total
 		var total float64
 		switch v := result["total"].(type) {
 		case float64:
@@ -358,7 +363,7 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	var finalResult []MonthlySummary
 	monthNames := []string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
 	for i := 1; i <= 12; i++ {
-		monthStr := fmt.Sprintf("%02d", i) // "01", "02", ...
+		monthStr := fmt.Sprintf("%02d", i)
 		data := monthlyData[monthStr]
 		finalResult = append(finalResult, MonthlySummary{
 			Month:   monthNames[i-1],
