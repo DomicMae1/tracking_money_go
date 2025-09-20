@@ -145,10 +145,8 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		}}},
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
-				{Key: "type", Value: "$type"},
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}}, // ❌
 			}},
-			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
 		}}},
 	}
 
