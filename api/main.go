@@ -128,7 +128,9 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
-	if !ensureDBConnection(w) { return }
+	if !ensureDBConnection(w) {
+		return
+	}
 	collection := client.Database("financial_manager").Collection("transactions")
 
 	queryParams := r.URL.Query()
@@ -140,18 +142,23 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// PIPELINE AGGREGASI
 	pipeline := mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
+		{{Key: "$match", Value: bson.D{
 			{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
 		}}},
-		bson.D{{Key: "$group", Value: bson.D{
+		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}}, // ❌
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}}, // ambil bulan dari string date
+				{Key: "type", Value: "$type"}, // income / expense
 			}},
+			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}}, // jumlahkan amount
 		}}},
 	}
 
 	cursor, err := collection.Aggregate(context.TODO(), pipeline)
-	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	defer cursor.Close(context.TODO())
 
 	var results []bson.M
@@ -163,14 +170,15 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	// === Proses hasil ===
 	monthlyData := make(map[string]map[string]float64)
 	for _, result := range results {
-		idDoc, ok := result["_id"].(primitive.D)
-		if !ok { continue }
-		idMap := idDoc.Map()
+		idDoc, ok := result["_id"].(bson.M) // pakai bson.M lebih aman
+		if !ok {
+			continue
+		}
 
 		// Ambil bulan ("01", "02", ..., "12")
-		month, _ := idMap["month"].(string)
+		month, _ := idDoc["month"].(string)
 		// Ambil tipe ("income" / "expense")
-		transType, _ := idMap["type"].(string)
+		transType, _ := idDoc["type"].(string)
 
 		// Ambil total
 		var total float64
