@@ -287,7 +287,7 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 	monthFilter := queryParams.Get("month")
 
 	// 🔥 Ambil userId dari context (hasil AuthMiddleware)
-	userIdStr := r.Context().Value(userIDKey).(string) // pakai contextKey yg sudah kita definisikan
+	userIdStr := r.Context().Value("userId").(string)
 	userId, _ := primitive.ObjectIDFromHex(userIdStr)
 
 	// === Filter dasar: hanya transaksi milik user ini ===
