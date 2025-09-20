@@ -23,15 +23,26 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	// ====================================================================
 
-	// Routing sederhana berdasarkan path URL (logika ini tetap sama)
-	if strings.HasPrefix(r.URL.Path, "/api/monthly-summary") {
-		monthlySummaryHandler(w, r)
-	} else if strings.HasPrefix(r.URL.Path, "/api/summary") {
-		SummaryHandler(w, r)
-	} else if strings.HasPrefix(r.URL.Path, "/api/transactions") {
-		TransactionsHandler(w, r)
-	} else {
-		// Jika path tidak dikenali, kirim 404 Not Found
+	// ================== ROUTING ==================
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/register"):
+		RegisterHandler(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/api/login"):
+		LoginHandler(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/api/transactions"):
+		// transactions butuh Auth
+		AuthMiddleware(TransactionsHandler)(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/api/monthly-summary"):
+		AuthMiddleware(monthlySummaryHandler)(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/api/summary"):
+		AuthMiddleware(SummaryHandler)(w, r)
+
+	default:
 		http.NotFound(w, r)
 	}
+	// =================================================
 }
