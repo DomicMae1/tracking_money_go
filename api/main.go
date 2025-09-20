@@ -140,17 +140,27 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	monthFilter := queryParams.Get("month")
+
 	// PIPELINE AGGREGASI
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.D{
-			{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
-		}}},
+		{{Key: "$match", Value: func() bson.D {
+			match := bson.D{
+				{Key: "date", Value: bson.M{"$regex": "^" + yearFilter}},
+			}
+			if monthFilter != "" && monthFilter != "all" {
+				// contoh: "2025-09"
+				prefix := fmt.Sprintf("^%s-%s", yearFilter, monthFilter)
+				match = bson.D{{Key: "date", Value: bson.M{"$regex": prefix}}}
+			}
+			return match
+		}()}},
 		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
-				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}}, // ambil bulan dari string date
-				{Key: "type", Value: "$type"}, // income / expense
+				{Key: "month", Value: bson.D{{Key: "$substr", Value: bson.A{"$date", 5, 2}}}},
+				{Key: "type", Value: "$type"},
 			}},
-			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}}, // jumlahkan amount
+			{Key: "total", Value: bson.D{{Key: "$sum", Value: "$amount"}}},
 		}}},
 	}
 
