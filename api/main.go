@@ -28,6 +28,7 @@ type Transaction struct {
 	Amount      float64            `json:"amount" bson:"amount"`
 	Date        string             `json:"date" bson:"date"`
 	Type        string             `json:"type" bson:"type"`
+	UserID      primitive.ObjectID `json:"userId" bson:"userId"`
 }
 
 
@@ -184,7 +185,22 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Ambil claim userId dari token
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Invalid claims", http.StatusUnauthorized)
+			return
+		}
+
+		userIdStr, ok := claims["userId"].(string)
+		if !ok {
+			http.Error(w, "Invalid token payload", http.StatusUnauthorized)
+			return
+		}
+
+		// simpan ke context agar bisa diakses handler
+		ctx := context.WithValue(r.Context(), "userId", userIdStr)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
@@ -212,7 +228,14 @@ func SummaryHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
 	monthFilter := queryParams.Get("month")
-	filter := bson.M{}
+	// Ambil userId dari context (hasil middleware auth)
+	userIdStr := r.Context().Value("userId").(string)
+	userId, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	// Mulai filter dengan userId
+	filter := bson.M{"userId": userId}
+
+	// Tambahkan filter tahun & bulan
 	if yearFilter != "" {
 		dateRegex := "^" + yearFilter
 		if monthFilter != "" && monthFilter != "all" {
@@ -349,13 +372,17 @@ func monthlySummaryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	// === PERBAIKAN: Deklarasikan 'collection' ===
 	collection := client.Database("financial_manager").Collection("transactions")
+
+	// 🔥 ambil userId dari context
+	userIdStr := r.Context().Value("userId").(string)
+	userId, _ := primitive.ObjectIDFromHex(userIdStr)
 
 	queryParams := r.URL.Query()
 	yearFilter := queryParams.Get("year")
 	monthFilter := queryParams.Get("month")
-	filter := bson.M{}
+
+	filter := bson.M{"userId": userId} // 🔥 filter hanya data milik user
 	if yearFilter != "" {
 		dateRegex := "^" + yearFilter
 		if monthFilter != "" && monthFilter != "all" {
@@ -363,7 +390,7 @@ func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		filter["date"] = bson.M{"$regex": dateRegex}
 	}
-	
+
 	sortOrder := bson.D{{Key: "date", Value: -1}}
 	cursor, err := collection.Find(context.TODO(), filter, options.Find().SetSort(sortOrder))
 	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
@@ -378,20 +405,25 @@ func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 // Handler createTransactionHandler (tidak ada perubahan)
 func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	// === PERBAIKAN: Deklarasikan 'collection' ===
 	collection := client.Database("financial_manager").Collection("transactions")
-	
+
 	var newTransaction Transaction
 	json.NewDecoder(r.Body).Decode(&newTransaction)
+
 	if newTransaction.Type != "income" && newTransaction.Type != "expense" {
 		http.Error(w, "Tipe transaksi tidak valid", http.StatusBadRequest)
 		return
 	}
-	
+
+	// 🔥 tambahkan userId ke transaksi
+	userIdStr := r.Context().Value("userId").(string)
+	userId, _ := primitive.ObjectIDFromHex(userIdStr)
+	newTransaction.UserID = userId
+
 	newTransaction.ID = primitive.NewObjectID()
 	result, err := collection.InsertOne(context.TODO(), newTransaction)
 	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
-	
+
 	var createdTransaction Transaction
 	collection.FindOne(context.TODO(), bson.M{"_id": result.InsertedID}).Decode(&createdTransaction)
 	w.Header().Set("Content-Type", "application/json")
@@ -400,7 +432,6 @@ func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	// === PERBAIKAN: Deklarasikan 'collection' ===
 	collection := client.Database("financial_manager").Collection("transactions")
 
 	path := r.URL.Path
@@ -408,7 +439,15 @@ func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := parts[len(parts)-1]
 	objectID, err := primitive.ObjectIDFromHex(idStr)
 	if err != nil { http.Error(w, "ID tidak valid", http.StatusBadRequest); return }
-	result, err := collection.DeleteOne(context.TODO(), bson.M{"_id": objectID})
+
+	// 🔥 hanya boleh hapus milik sendiri
+	userIdStr := r.Context().Value("userId").(string)
+	userId, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	result, err := collection.DeleteOne(context.TODO(), bson.M{
+		"_id":    objectID,
+		"userId": userId,
+	})
 	if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
 	if result.DeletedCount == 0 { http.Error(w, "Transaksi tidak ditemukan", http.StatusNotFound); return }
 	w.WriteHeader(http.StatusNoContent)
