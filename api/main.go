@@ -26,7 +26,7 @@ type Transaction struct {
 	ID          primitive.ObjectID `json:"id" bson:"_id,omitempty"`
 	Description string             `json:"description" bson:"description"`
 	Amount      float64            `json:"amount" bson:"amount"`
-	Date        string             `json:"date" bson:"date"`
+	Date        string             `bson:"date"`
 	Type        string             `json:"type" bson:"type"`
 	UserID      primitive.ObjectID `json:"userId" bson:"userId"`
 }
