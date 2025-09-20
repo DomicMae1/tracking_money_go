@@ -10,6 +10,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -39,6 +43,13 @@ type MonthlySummary struct {
 	Expense float64 `json:"expense"`
 }
 
+type User struct {
+	ID       primitive.ObjectID `json:"id" bson:"_id,omitempty"`
+	Username string             `json:"username" bson:"username"`
+	Email    string             `json:"email" bson:"email"`
+	Password string             `json:"password,omitempty" bson:"password"`
+}
+
 var client *mongo.Client
 
 func connectDB() (*mongo.Client, error) {
@@ -66,6 +77,117 @@ func ensureDBConnection(w http.ResponseWriter) bool {
 	}
 	return true
 }
+
+//Registrasi
+func RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	if !ensureDBConnection(w) { return }
+	collection := client.Database("financial_manager").Collection("users")
+
+	var user User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// hash password
+	hash, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+	user.Password = string(hash)
+	user.ID = primitive.NewObjectID()
+
+	_, err = collection.InsertOne(context.TODO(), user)
+	if err != nil {
+		http.Error(w, "User already exists", http.StatusConflict)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"message": "User registered successfully"})
+}
+
+//Login
+var jwtSecret = []byte("SECRET_KEY_GANTI") // sebaiknya ambil dari ENV
+
+// Contoh bikin token JWT
+func GenerateToken(username string) (string, error) {
+	claims := &jwt.RegisteredClaims{
+		Subject:   username,
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)), // <- pakai time
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
+// Contoh hash password
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost) // <- pakai bcrypt
+	return string(bytes), err
+}
+
+// Contoh cek password
+func CheckPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+func LoginHandler(w http.ResponseWriter, r *http.Request) {
+	if !ensureDBConnection(w) { return }
+	collection := client.Database("financial_manager").Collection("users")
+
+	var input User
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	var user User
+	err := collection.FindOne(context.TODO(), bson.M{"email": input.Email}).Decode(&user)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusUnauthorized)
+		return
+	}
+
+	// cek password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
+		return
+	}
+
+	// buat JWT
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"userId": user.ID.Hex(),
+		"exp":    time.Now().Add(time.Hour * 24).Unix(),
+	})
+	tokenString, _ := token.SignedString(jwtSecret)
+
+	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+}
+
+func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Missing token", http.StatusUnauthorized)
+			return
+		}
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
 
 // Handler utama yang merutekan request
 func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
